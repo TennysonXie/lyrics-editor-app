@@ -8,6 +8,7 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
   --bg: #f8fafc;
   --card: #ffffff;
   --soft: #f8fafc;
@@ -41,7 +42,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -51,7 +53,8 @@ button {
 }
 
 textarea,
-input {
+input,
+select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -61,7 +64,8 @@ input {
 }
 
 textarea:focus,
-input:focus {
+input:focus,
+select:focus {
   border-color: #93c5fd;
   box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.35);
 }
@@ -101,8 +105,7 @@ input:focus {
 .hero-actions,
 .line-actions,
 .pill-row,
-.line-title-wrap,
-.upload-row {
+.line-title-wrap {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
@@ -158,9 +161,13 @@ input:focus {
   gap: 20px;
 }
 
-.three-col,
-.line-time-grid,
-.segment-beat-row {
+.two-col-main {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 20px;
+}
+
+.line-time-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 14px;
@@ -196,15 +203,17 @@ input:focus {
 }
 
 .textarea.tall {
-  min-height: 260px;
+  min-height: 220px;
 }
 
-.input {
+.textarea.mono {
+  min-height: 220px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.input,
+.select {
   padding: 12px 14px;
-}
-
-.audio-player {
-  width: 100%;
 }
 
 .btn {
@@ -245,18 +254,6 @@ input:focus {
 
 .btn-ghost:hover {
   background: #eef2f7;
-}
-
-.upload-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border-radius: 16px;
-  padding: 11px 16px;
-  border: 1px solid var(--border);
-  background: white;
-  font-weight: 600;
-  cursor: pointer;
 }
 
 .pill {
@@ -372,20 +369,28 @@ input:focus {
   color: #334155;
 }
 
+.note-box,
+.soft-note {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.note-box {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
 .full-width {
   width: 100%;
 }
 
-.align-bottom {
-  display: flex;
-  align-items: flex-end;
-}
-
 @media (max-width: 960px) {
   .two-col,
-  .three-col,
-  .line-time-grid,
-  .segment-beat-row {
+  .two-col-main,
+  .line-time-grid {
     grid-template-columns: 1fr;
   }
 
