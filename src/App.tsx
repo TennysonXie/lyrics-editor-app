@@ -1,16 +1,47 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+type NoteToken = {
+  raw: string;
+  degree: string;
+  duration: number;
+  octaveShift: number;
+  isRest: boolean;
+};
+
 type Segment = {
   size: number;
   cells: string[];
-  beats?: number;
+  beats: number;
+  notes: NoteToken[];
 };
 
 type LineData = {
   segments: Segment[];
   startTime?: string;
   endTime?: string;
-  totalBeats?: number;
+  totalBeats: number;
+};
+
+const SCALE_OFFSETS: Record<string, number> = {
+  "1": 0,
+  "2": 2,
+  "3": 4,
+  "4": 5,
+  "5": 7,
+  "6": 9,
+  "7": 11,
+};
+
+const KEY_ROOTS: Record<string, number> = {
+  C: 60,
+  D: 62,
+  E: 64,
+  F: 65,
+  G: 67,
+  A: 69,
+  B: 71,
+  Bb: 70,
+  Eb: 63,
 };
 
 function splitLines(text: string) {
@@ -49,15 +80,6 @@ function parsePatternLine(line: string) {
     .filter((n) => !Number.isNaN(n) && n > 0);
 }
 
-function parseBeatsLine(line: string) {
-  return line
-    .split(/[-,，、/|｜\s]+/)
-    .map((n) => n.trim())
-    .filter(Boolean)
-    .map((n) => Number(n))
-    .filter((n) => !Number.isNaN(n) && n > 0);
-}
-
 function parseTimeToSeconds(value?: string) {
   if (!value) return null;
   const raw = value.trim();
@@ -77,17 +99,65 @@ function formatSeconds(seconds?: number | null) {
   return `${min}:${sec}`;
 }
 
+function parseNoteToken(token: string): NoteToken {
+  const trimmed = token.trim();
+  if (!trimmed) {
+    return { raw: token, degree: "0", duration: 1, octaveShift: 0, isRest: true };
+  }
+
+  const [pitchPart, durPart] = trimmed.split(":");
+  const duration = durPart ? Number(durPart) : 1;
+  const safeDuration = !Number.isNaN(duration) && duration > 0 ? duration : 1;
+
+  let octaveShift = 0;
+  let degreePart = pitchPart;
+
+  while (degreePart.startsWith(".")) {
+    octaveShift -= 1;
+    degreePart = degreePart.slice(1);
+  }
+  while (degreePart.endsWith(".")) {
+    octaveShift += 1;
+    degreePart = degreePart.slice(0, -1);
+  }
+
+  const degree = degreePart || "0";
+
+  return {
+    raw: trimmed,
+    degree,
+    duration: safeDuration,
+    octaveShift,
+    isRest: degree === "0",
+  };
+}
+
+function tokenToMidi(token: NoteToken, keyRoot: string) {
+  if (token.isRest) return null;
+  const base = KEY_ROOTS[keyRoot] ?? KEY_ROOTS.C;
+  const offset = SCALE_OFFSETS[token.degree];
+  if (offset === undefined) return null;
+  return base + offset + token.octaveShift * 12;
+}
+
+function midiToFrequency(midi: number) {
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
 function lineFromPattern(patternLine: string): LineData {
   const nums = parsePatternLine(patternLine);
+  const segments = nums.map((n) => ({
+    size: n,
+    cells: Array.from({ length: n }, () => ""),
+    beats: n,
+    notes: [] as NoteToken[],
+  }));
+
   return {
-    segments: nums.map((n) => ({
-      size: n,
-      cells: Array.from({ length: n }, () => ""),
-      beats: n,
-    })),
+    segments,
     startTime: "",
     endTime: "",
-    totalBeats: nums.reduce((a, b) => a + b, 0),
+    totalBeats: segments.reduce((sum, seg) => sum + seg.beats, 0),
   };
 }
 
@@ -99,28 +169,68 @@ function lineFromLyric(rawLine: string): LineData {
       size: Math.max(tokens.length, 1),
       cells: tokens.length ? tokens : [""],
       beats: Math.max(tokens.length, 1),
+      notes: [] as NoteToken[],
     };
   });
+
   return {
     segments,
     startTime: "",
     endTime: "",
-    totalBeats: segments.reduce((a, b) => a + (b.beats || 0), 0),
+    totalBeats: segments.reduce((sum, seg) => sum + seg.beats, 0),
+  };
+}
+
+function lineFromJianpu(rawLine: string): LineData {
+  const parts = rawLine
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const segments = parts.map((part) => {
+    const notes = part
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .map(parseNoteToken);
+
+    const beats = notes.reduce((sum, note) => sum + note.duration, 0) || 1;
+
+    return {
+      size: Math.max(notes.length, 1),
+      cells: Array.from({ length: Math.max(notes.length, 1) }, () => ""),
+      beats,
+      notes,
+    };
+  });
+
+  return {
+    segments,
+    startTime: "",
+    endTime: "",
+    totalBeats: segments.reduce((sum, seg) => sum + seg.beats, 0),
   };
 }
 
 function buildLinesFromPatternText(text: string): LineData[] {
   return splitLines(text)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => lineFromPattern(line));
+    .filter(Boolean)
+    .map(lineFromPattern);
 }
 
 function buildLinesFromLyricsText(text: string): LineData[] {
   return splitLines(text)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => lineFromLyric(line));
+    .filter(Boolean)
+    .map(lineFromLyric);
+}
+
+function buildLinesFromJianpuText(text: string): LineData[] {
+  return splitLines(text)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map(lineFromJianpu);
 }
 
 function cloneLines(lines: LineData[]) {
@@ -129,16 +239,13 @@ function cloneLines(lines: LineData[]) {
     segments: line.segments.map((seg) => ({
       ...seg,
       cells: [...seg.cells],
+      notes: seg.notes.map((note) => ({ ...note })),
     })),
   }));
 }
 
 function linesToPatternText(lines: LineData[]) {
   return lines.map((line) => line.segments.map((seg) => seg.size).join(" ")).join("\n");
-}
-
-function linesToBeatsText(lines: LineData[]) {
-  return lines.map((line) => line.segments.map((seg) => seg.beats || seg.size).join(" ")).join("\n");
 }
 
 function lineCellsFilled(line: LineData) {
@@ -150,75 +257,162 @@ function buildPreviewText(line: LineData) {
 }
 
 function sumLineBeats(line: LineData) {
-  return line.segments.reduce((sum, seg) => sum + (seg.beats || 0), 0);
+  return line.segments.reduce((sum, seg) => sum + seg.beats, 0);
+}
+
+function lineHasNotes(line: LineData) {
+  return line.segments.some((seg) => seg.notes.length > 0);
 }
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<"build" | "write">("build");
   const [patternText, setPatternText] = useState(`4 4 5\n4 4 5\n7 7`);
   const [sourceLyricsText, setSourceLyricsText] = useState(`春风 轻轻 吹过\n心事 慢慢 说破\n若你还在 远方等我`);
-  const [draftLines, setDraftLines] = useState<LineData[]>(() => buildLinesFromPatternText(`4 4 5\n4 4 5\n7 7`));
-  const [audioUrl, setAudioUrl] = useState("");
-  const [audioName, setAudioName] = useState("");
-  const [playingLabel, setPlayingLabel] = useState("");
+  const [jianpuText, setJianpuText] = useState(`1 2 3 5 | 5 3 2 1\n1 2 3:2 | 5 3 2 1\n5 6 1. 2. | 3.:2 2. 1.`);
+  const [draftLines, setDraftLines] = useState<LineData[]>(() =>
+    buildLinesFromJianpuText(`1 2 3 5 | 5 3 2 1\n1 2 3:2 | 5 3 2 1\n5 6 1. 2. | 3.:2 2. 1.`)
+  );
   const [tempoBpm, setTempoBpm] = useState("90");
   const [firstLineStart, setFirstLineStart] = useState("0:00.0");
-  const [beatsText, setBeatsText] = useState(`4 4 5\n4 4 5\n7 7`);
-  const [jianpuText, setJianpuText] = useState(`1 2 3 5 | 5 3 2 1 | 2 3 5 6 5\n1 2 3 5 | 5 3 2 1 | 2 3 5 6 5\n5 6 1 2 3 2 1 | 6 5 3 2 1 2 3`);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const stopTimerRef = useRef<number | null>(null);
+  const [keyRoot, setKeyRoot] = useState("C");
+  const [playingLabel, setPlayingLabel] = useState("");
+  const [activeMode, setActiveMode] = useState<"jianpu" | "fallback">("jianpu");
+
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const timersRef = useRef<number[]>([]);
 
   useEffect(() => {
-    const patternBuilt = buildLinesFromPatternText(patternText);
-    if (patternBuilt.length > 0) {
-      setDraftLines((prev) => {
-        const next = cloneLines(patternBuilt);
-        prev.forEach((line, i) => {
-          if (next[i]) {
-            next[i].startTime = line.startTime || "";
-            next[i].endTime = line.endTime || "";
-            next[i].totalBeats = line.totalBeats || sumLineBeats(next[i]);
-          }
-          line.segments.forEach((seg, j) => {
-            if (next[i]?.segments[j]) {
-              next[i].segments[j].beats = seg.beats || next[i].segments[j].size;
-            }
-            seg.cells.forEach((cell, k) => {
-              if (next[i]?.segments[j]?.cells[k] !== undefined) {
-                next[i].segments[j].cells[k] = cell;
-              }
-            });
-          });
-        });
-        return next;
-      });
-    }
-  }, [patternText]);
+    autoGenerateLineTimes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     return () => {
-      if (stopTimerRef.current) window.clearTimeout(stopTimerRef.current);
-      if (audioRef.current) audioRef.current.pause();
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      stopPlayback();
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(() => {});
+      }
     };
-  }, [audioUrl]);
+  }, []);
 
   const overallStats = useMemo(() => {
     const totalLines = draftLines.length;
     const doneLines = draftLines.filter(lineCellsFilled).length;
-    const totalCells = draftLines.reduce((sum, line) => sum + line.segments.reduce((a, seg) => a + seg.size, 0), 0);
+    const totalCells = draftLines.reduce(
+      (sum, line) => sum + line.segments.reduce((a, seg) => a + seg.size, 0),
+      0
+    );
     const filledCells = draftLines.reduce(
-      (sum, line) => sum + line.segments.reduce((a, seg) => a + seg.cells.filter((c) => c.trim().length > 0).length, 0),
+      (sum, line) =>
+        sum + line.segments.reduce((a, seg) => a + seg.cells.filter((c) => c.trim().length > 0).length, 0),
       0
     );
     return { totalLines, doneLines, totalCells, filledCells };
   }, [draftLines]);
 
+  const stopPlayback = () => {
+    timersRef.current.forEach((id) => window.clearTimeout(id));
+    timersRef.current = [];
+    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+      audioContextRef.current.suspend().catch(() => {});
+    }
+    setPlayingLabel("");
+  };
+
+  const ensureAudioContext = async () => {
+    if (!audioContextRef.current || audioContextRef.current.state === "closed") {
+      audioContextRef.current = new window.AudioContext();
+    }
+    if (audioContextRef.current.state === "suspended") {
+      await audioContextRef.current.resume();
+    }
+    return audioContextRef.current;
+  };
+
+  const scheduleTone = (ctx: AudioContext, freq: number, startAt: number, durationSec: number) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(freq, startAt);
+
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(0.12, startAt + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + Math.max(durationSec - 0.02, 0.03));
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(startAt);
+    osc.stop(startAt + durationSec);
+  };
+
+  const playLineMelody = async (line: LineData, lineIndex: number) => {
+    if (!lineHasNotes(line)) return;
+
+    stopPlayback();
+
+    const bpm = Number(tempoBpm);
+    if (Number.isNaN(bpm) || bpm <= 0) return;
+
+    const ctx = await ensureAudioContext();
+    const secondsPerBeat = 60 / bpm;
+    let cursor = ctx.currentTime + 0.05;
+
+    line.segments.forEach((seg) => {
+      seg.notes.forEach((note) => {
+        const durationSec = note.duration * secondsPerBeat;
+        const midi = tokenToMidi(note, keyRoot);
+        if (midi !== null) {
+          scheduleTone(ctx, midiToFrequency(midi), cursor, durationSec);
+        }
+        cursor += durationSec;
+      });
+    });
+
+    setPlayingLabel(`播放第 ${lineIndex + 1} 行旋律`);
+    const doneTimer = window.setTimeout(() => {
+      setPlayingLabel("");
+    }, Math.max(100, (cursor - ctx.currentTime) * 1000));
+    timersRef.current.push(doneTimer);
+  };
+
+  const autoGenerateLineTimes = (overrideLines?: LineData[]) => {
+    const bpm = Number(tempoBpm);
+    const start = parseTimeToSeconds(firstLineStart);
+    if (Number.isNaN(bpm) || bpm <= 0 || start === null) return;
+
+    const secondsPerBeat = 60 / bpm;
+    const inputLines = overrideLines ? cloneLines(overrideLines) : cloneLines(draftLines);
+
+    let cursor = start;
+    inputLines.forEach((line) => {
+      line.totalBeats = sumLineBeats(line) || 1;
+      line.startTime = formatSeconds(cursor);
+      cursor += line.totalBeats * secondsPerBeat;
+      line.endTime = formatSeconds(cursor);
+    });
+
+    setDraftLines(inputLines);
+  };
+
+  const buildFromJianpu = () => {
+    const next = buildLinesFromJianpuText(jianpuText);
+    if (next.length > 0) {
+      setDraftLines(next);
+      setPatternText(linesToPatternText(next));
+      autoGenerateLineTimes(next);
+      setActiveMode("jianpu");
+      setActiveTab("write");
+    }
+  };
+
   const loadFromPattern = () => {
     const next = buildLinesFromPatternText(patternText);
     if (next.length > 0) {
       setDraftLines(next);
-      setBeatsText(linesToBeatsText(next));
+      autoGenerateLineTimes(next);
+      setActiveMode("fallback");
       setActiveTab("write");
     }
   };
@@ -228,40 +422,39 @@ export default function App() {
     if (next.length > 0) {
       setDraftLines(next);
       setPatternText(linesToPatternText(next));
-      setBeatsText(linesToBeatsText(next));
+      autoGenerateLineTimes(next);
+      setActiveMode("fallback");
       setActiveTab("write");
     }
   };
 
   const loadExample1 = () => {
-    const pattern = `4 4 5\n4 4 5\n7 7`;
-    const lyrics = `春风 轻轻 吹过\n心事 慢慢 说破\n若你还在 远方等我`;
-    setPatternText(pattern);
-    setSourceLyricsText(lyrics);
-    const next = buildLinesFromPatternText(pattern);
+    const example = `1 2 3 5 | 5 3 2 1\n1 2 3:2 | 5 3 2 1\n5 6 1. 2. | 3.:2 2. 1.`;
+    setJianpuText(example);
+    const next = buildLinesFromJianpuText(example);
     setDraftLines(next);
-    setBeatsText(linesToBeatsText(next));
+    setPatternText(linesToPatternText(next));
+    autoGenerateLineTimes(next);
+    setActiveMode("jianpu");
   };
 
   const loadExample2 = () => {
-    const lyrics = `I love you / more than stars\n夜风 轻轻 吹\n等你 回来`;
-    const next = buildLinesFromLyricsText(lyrics);
+    const fallback = `4 4 5\n4 4 5\n7 7`;
+    const lyrics = `春风 轻轻 吹过\n心事 慢慢 说破\n若你还在 远方等我`;
+    setPatternText(fallback);
     setSourceLyricsText(lyrics);
+    const next = buildLinesFromLyricsText(lyrics);
     setDraftLines(next);
-    setPatternText(linesToPatternText(next));
-    setBeatsText(linesToBeatsText(next));
+    autoGenerateLineTimes(next);
+    setActiveMode("fallback");
   };
 
   const resetAll = () => {
-    stopAudio();
+    stopPlayback();
     setPatternText("");
     setSourceLyricsText("");
-    setDraftLines([]);
-    setBeatsText("");
     setJianpuText("");
-    if (audioUrl) URL.revokeObjectURL(audioUrl);
-    setAudioUrl("");
-    setAudioName("");
+    setDraftLines([]);
   };
 
   const updateCell = (lineIdx: number, segIdx: number, cellIdx: number, value: string) => {
@@ -278,30 +471,16 @@ export default function App() {
       const next = cloneLines(prev);
       const seg = next[lineIdx]?.segments[segIdx];
       if (!seg) return prev;
+
       const newSize = Math.max(1, seg.size + delta);
       if (newSize > seg.size) {
         seg.cells.push(...Array.from({ length: newSize - seg.size }, () => ""));
       } else if (newSize < seg.size) {
         seg.cells = seg.cells.slice(0, newSize);
       }
-      seg.size = newSize;
-      if (!seg.beats || seg.beats < 1) seg.beats = newSize;
-      next[lineIdx].totalBeats = sumLineBeats(next[lineIdx]);
-      setPatternText(linesToPatternText(next));
-      setBeatsText(linesToBeatsText(next));
-      return next;
-    });
-  };
 
-  const updateSegmentBeats = (lineIdx: number, segIdx: number, value: string) => {
-    const num = Number(value);
-    setDraftLines((prev) => {
-      const next = cloneLines(prev);
-      const seg = next[lineIdx]?.segments[segIdx];
-      if (!seg) return prev;
-      seg.beats = !Number.isNaN(num) && num > 0 ? num : 1;
-      next[lineIdx].totalBeats = sumLineBeats(next[lineIdx]);
-      setBeatsText(linesToBeatsText(next));
+      seg.size = newSize;
+      setPatternText(linesToPatternText(next));
       return next;
     });
   };
@@ -309,10 +488,14 @@ export default function App() {
   const addSegment = (lineIdx: number) => {
     setDraftLines((prev) => {
       const next = cloneLines(prev);
-      next[lineIdx]?.segments.push({ size: 1, cells: [""], beats: 1 });
+      next[lineIdx]?.segments.push({
+        size: 1,
+        cells: [""],
+        beats: 1,
+        notes: [],
+      });
       next[lineIdx].totalBeats = sumLineBeats(next[lineIdx]);
       setPatternText(linesToPatternText(next));
-      setBeatsText(linesToBeatsText(next));
       return next;
     });
   };
@@ -324,16 +507,23 @@ export default function App() {
       next[lineIdx].segments.splice(segIdx, 1);
       next[lineIdx].totalBeats = sumLineBeats(next[lineIdx]);
       setPatternText(linesToPatternText(next));
-      setBeatsText(linesToBeatsText(next));
       return next;
     });
   };
 
   const addLine = () => {
     setDraftLines((prev) => {
-      const next = [...cloneLines(prev), { segments: [{ size: 1, cells: [""], beats: 1 }], startTime: "", endTime: "", totalBeats: 1 }];
+      const next = [
+        ...cloneLines(prev),
+        {
+          segments: [{ size: 1, cells: [""], beats: 1, notes: [] }],
+          startTime: "",
+          endTime: "",
+          totalBeats: 1,
+        },
+      ];
       setPatternText(linesToPatternText(next));
-      setBeatsText(linesToBeatsText(next));
+      autoGenerateLineTimes(next);
       return next;
     });
   };
@@ -343,110 +533,7 @@ export default function App() {
       const next = cloneLines(prev);
       next.splice(lineIdx, 1);
       setPatternText(linesToPatternText(next));
-      setBeatsText(linesToBeatsText(next));
-      return next;
-    });
-  };
-
-  const handleAudioUpload = (file?: File) => {
-    if (!file) return;
-    stopAudio();
-    if (audioUrl) URL.revokeObjectURL(audioUrl);
-    const nextUrl = URL.createObjectURL(file);
-    setAudioUrl(nextUrl);
-    setAudioName(file.name);
-  };
-
-  const stopAudio = () => {
-    if (stopTimerRef.current) {
-      window.clearTimeout(stopTimerRef.current);
-      stopTimerRef.current = null;
-    }
-    if (audioRef.current) audioRef.current.pause();
-    setPlayingLabel("");
-  };
-
-  const playRange = async (startRaw?: string, endRaw?: string, label?: string) => {
-    if (!audioRef.current || !audioUrl) return;
-    const start = parseTimeToSeconds(startRaw);
-    const end = parseTimeToSeconds(endRaw);
-    if (start === null || end === null || end <= start) return;
-
-    stopAudio();
-    const audio = audioRef.current;
-    audio.currentTime = start;
-    try {
-      await audio.play();
-      setPlayingLabel(label || "播放中");
-      stopTimerRef.current = window.setTimeout(() => {
-        audio.pause();
-        setPlayingLabel("");
-      }, Math.max(0, (end - start) * 1000));
-    } catch {
-      setPlayingLabel("");
-    }
-  };
-
-  const autoGenerateLineTimes = () => {
-    const bpm = Number(tempoBpm);
-    const start = parseTimeToSeconds(firstLineStart);
-    if (Number.isNaN(bpm) || bpm <= 0 || start === null) return;
-
-    const secondsPerBeat = 60 / bpm;
-    setDraftLines((prev) => {
-      const next = cloneLines(prev);
-      let cursor = start;
-      next.forEach((line) => {
-        const totalBeats = sumLineBeats(line) || 1;
-        line.totalBeats = totalBeats;
-        line.startTime = formatSeconds(cursor);
-        cursor += totalBeats * secondsPerBeat;
-        line.endTime = formatSeconds(cursor);
-      });
-      return next;
-    });
-  };
-
-  const autoGenerateBeatsFromText = () => {
-    const beatLines = splitLines(beatsText).map((line) => parseBeatsLine(line));
-    setDraftLines((prev) => {
-      const next = cloneLines(prev);
-      next.forEach((line, i) => {
-        const current = beatLines[i] || [];
-        line.segments.forEach((seg, j) => {
-          seg.beats = current[j] || seg.size;
-        });
-        line.totalBeats = sumLineBeats(line);
-      });
-      return next;
-    });
-  };
-
-  const autoGenerateBeatsFromJianpu = () => {
-    const parsed = splitLines(jianpuText)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) =>
-        line
-          .split("|")
-          .map((part) => part.trim())
-          .filter(Boolean)
-          .map((part) => {
-            const notes = part.split(/\s+/).filter(Boolean);
-            return notes.length || 1;
-          })
-      );
-
-    setDraftLines((prev) => {
-      const next = cloneLines(prev);
-      next.forEach((line, i) => {
-        const beatRow = parsed[i] || [];
-        line.segments.forEach((seg, j) => {
-          seg.beats = beatRow[j] || seg.size;
-        });
-        line.totalBeats = sumLineBeats(line);
-      });
-      setBeatsText(linesToBeatsText(next));
+      autoGenerateLineTimes(next);
       return next;
     });
   };
@@ -457,115 +544,161 @@ export default function App() {
         <div className="hero">
           <div>
             <h1>填词格子编辑器</h1>
-            <p>支持格式识别、格子填词、节拍调整，以及根据 BPM 自动生成整行播放时间。</p>
+            <p>现在以“输入简谱 → 自动生成旋律与时间 → 填词”为主。没有谱子时，再用备用的格式输入模式。</p>
           </div>
           <div className="hero-actions">
-            <button className="btn btn-outline" onClick={loadExample1}>示例 1</button>
-            <button className="btn btn-outline" onClick={loadExample2}>示例 2</button>
+            <button className="btn btn-outline" onClick={loadExample1}>谱子示例</button>
+            <button className="btn btn-outline" onClick={loadExample2}>无谱示例</button>
             <button className="btn btn-ghost" onClick={resetAll}>清空</button>
           </div>
         </div>
 
         <section className="card">
           <div className="card-header">
-            <h2>伴奏与自动时间生成</h2>
+            <h2>谱子输入与自动生成</h2>
           </div>
           <div className="card-body stack">
-            <div className="upload-row">
-              <label className="upload-btn">
-                上传纯音乐/伴奏
-                <input type="file" accept="audio/*" onChange={(e) => handleAudioUpload(e.target.files?.[0])} hidden />
-              </label>
-              <div className="muted-text">{audioName ? `当前音频：${audioName}` : "还没有上传音频文件"}</div>
-              {playingLabel ? <span className="pill pill-success">{playingLabel}</span> : null}
-            </div>
-
-            {audioUrl ? (
-              <div className="soft-box">
-                <audio ref={audioRef} src={audioUrl} controls className="audio-player" />
-              </div>
-            ) : null}
-
-            <div className="two-col">
+            <div className="two-col-main">
               <div className="soft-box stack">
-                <div className="section-title">方式 A：直接输入每段节拍</div>
-                <p className="muted-text">每行对应一行歌词，每个数字对应一个段落占多少拍。例如 4 4 5。</p>
-                <textarea className="textarea" value={beatsText} onChange={(e) => setBeatsText(e.target.value)} />
-                <button className="btn btn-primary" onClick={autoGenerateBeatsFromText}>应用节拍到当前结构</button>
+                <div className="section-title">主模式：输入简谱自动生成结构</div>
+                <p className="muted-text">
+                  推荐使用版本二语法：默认每个音 1 拍；需要更细节时再写成 <strong>音高:时值</strong>，例如 <strong>3:2</strong>。
+                </p>
+                <p className="muted-text">
+                  规则：<strong>|</strong> 表示一段；<strong>1 2 3 5</strong> 默认都是 1 拍；<strong>5:0.5</strong> 表示半拍；
+                  <strong> 0 </strong> 表示休止；<strong>1.</strong> 是高八度，<strong>.1</strong> 是低八度。
+                </p>
+                <textarea
+                  className="textarea mono"
+                  value={jianpuText}
+                  onChange={(e) => setJianpuText(e.target.value)}
+                />
+                <div className="hero-actions">
+                  <button className="btn btn-primary" onClick={buildFromJianpu}>从简谱生成格子</button>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => draftLines[0] && playLineMelody(draftLines[0], 0)}
+                  >
+                    试听第一行
+                  </button>
+                  <button className="btn btn-ghost" onClick={stopPlayback}>停止</button>
+                </div>
+                {playingLabel ? <span className="pill pill-success">{playingLabel}</span> : null}
               </div>
 
               <div className="soft-box stack">
-                <div className="section-title">方式 B：输入简谱自动估算段落节拍</div>
-                <p className="muted-text">约定用 | 分段。系统按每段有多少个音符，自动把它当作该段节拍数。</p>
-                <textarea className="textarea" value={jianpuText} onChange={(e) => setJianpuText(e.target.value)} />
-                <button className="btn btn-primary" onClick={autoGenerateBeatsFromJianpu}>从简谱估算节拍</button>
-              </div>
-            </div>
+                <div className="section-title">参数</div>
 
-            <div className="soft-box stack">
-              <div className="section-title">根据速度自动生成每一行播放时间</div>
-              <div className="three-col">
+                <div>
+                  <div className="field-label">调号</div>
+                  <select
+                    className="select"
+                    value={keyRoot}
+                    onChange={(e) => setKeyRoot(e.target.value)}
+                  >
+                    {Object.keys(KEY_ROOTS).map((key) => (
+                      <option key={key} value={key}>{key}</option>
+                    ))}
+                  </select>
+                </div>
+
                 <div>
                   <div className="field-label">速度 BPM</div>
-                  <input className="input" value={tempoBpm} onChange={(e) => setTempoBpm(e.target.value)} placeholder="例如 90" />
+                  <input
+                    className="input"
+                    value={tempoBpm}
+                    onChange={(e) => setTempoBpm(e.target.value)}
+                    placeholder="例如 90"
+                  />
                 </div>
+
                 <div>
                   <div className="field-label">第一行开始时间</div>
-                  <input className="input" value={firstLineStart} onChange={(e) => setFirstLineStart(e.target.value)} placeholder="例如 0:12.0" />
+                  <input
+                    className="input"
+                    value={firstLineStart}
+                    onChange={(e) => setFirstLineStart(e.target.value)}
+                    placeholder="例如 0:00.0"
+                  />
                 </div>
-                <div className="align-bottom">
-                  <button className="btn btn-primary full-width" onClick={autoGenerateLineTimes}>自动生成整行时间</button>
+
+                <button className="btn btn-primary full-width" onClick={() => autoGenerateLineTimes()}>
+                  重新计算整行时间
+                </button>
+
+                <div className="soft-note">
+                  主模式下，不再需要上传伴奏文件。网页会直接按简谱播放旋律，并自动给下面歌词格子分配时间。
                 </div>
               </div>
-              <p className="muted-text">先给每段设定节拍数，再按 BPM 把每一行总拍数换算成开始/结束时间。这里只保留整行播放。</p>
             </div>
           </div>
         </section>
 
         <div className="tabs">
-          <button className={`tab ${activeTab === "build" ? "tab-active" : ""}`} onClick={() => setActiveTab("build")}>
-            建立格式
+          <button
+            className={`tab ${activeTab === "build" ? "tab-active" : ""}`}
+            onClick={() => setActiveTab("build")}
+          >
+            建立结构
           </button>
-          <button className={`tab ${activeTab === "write" ? "tab-active" : ""}`} onClick={() => setActiveTab("write")}>
+          <button
+            className={`tab ${activeTab === "write" ? "tab-active" : ""}`}
+            onClick={() => setActiveTab("write")}
+          >
             格子填词
           </button>
         </div>
 
         {activeTab === "build" ? (
-          <div className="stack">
-            <div className="two-col">
-              <section className="card">
-                <div className="card-header">
-                  <h2>方式 A：直接输入格式节奏</h2>
-                </div>
-                <div className="card-body stack">
-                  <p className="muted-text">每行一条旋律结构，例如 4 4 5。</p>
-                  <textarea className="textarea tall" value={patternText} onChange={(e) => setPatternText(e.target.value)} />
-                  <button className="btn btn-primary" onClick={loadFromPattern}>按格式生成白框</button>
-                </div>
-              </section>
-
-              <section className="card">
-                <div className="card-header">
-                  <h2>方式 B：输入现成歌词自动识别</h2>
-                </div>
-                <div className="card-body stack">
-                  <p className="muted-text">用空格、逗号、斜杠标出停顿。系统会识别每段多少字或词，并生成对应白框。</p>
-                  <textarea className="textarea tall" value={sourceLyricsText} onChange={(e) => setSourceLyricsText(e.target.value)} />
-                  <button className="btn btn-primary" onClick={detectFromLyrics}>从歌词识别格式</button>
-                </div>
-              </section>
+          <section className="card">
+            <div className="card-header">
+              <h2>备用模式：没有谱子时再用</h2>
             </div>
+            <div className="card-body stack">
+              <div className="hero-actions">
+                <button
+                  className={`btn ${activeMode === "jianpu" ? "btn-primary" : "btn-outline"}`}
+                  onClick={() => setActiveMode("jianpu")}
+                >
+                  当前主模式
+                </button>
+                <button
+                  className={`btn ${activeMode === "fallback" ? "btn-primary" : "btn-outline"}`}
+                  onClick={() => setActiveMode("fallback")}
+                >
+                  切到备用模式
+                </button>
+              </div>
 
-            <section className="card">
-              <div className="card-header">
-                <h2>当前识别/编辑后的格式</h2>
+              <div className="two-col">
+                <section className="soft-box stack">
+                  <div className="section-title">输入格式节奏</div>
+                  <p className="muted-text">适合没有谱子、但知道停顿结构时使用，例如 4 4 5。</p>
+                  <textarea
+                    className="textarea tall"
+                    value={patternText}
+                    onChange={(e) => setPatternText(e.target.value)}
+                    placeholder={"例如：\n4 4 5\n4 4 5\n7 7"}
+                  />
+                  <button className="btn btn-primary" onClick={loadFromPattern}>按格式生成白框</button>
+                </section>
+
+                <section className="soft-box stack">
+                  <div className="section-title">输入现成歌词自动识别</div>
+                  <p className="muted-text">适合没有谱子，但已经写了几句歌词，想先搭词格时使用。</p>
+                  <textarea
+                    className="textarea tall"
+                    value={sourceLyricsText}
+                    onChange={(e) => setSourceLyricsText(e.target.value)}
+                    placeholder={"例如：\n春风 轻轻 吹过\nI love you / more than stars"}
+                  />
+                  <button className="btn btn-primary" onClick={detectFromLyrics}>从歌词识别格式</button>
+                </section>
               </div>
-              <div className="card-body">
-                <div className="code-box">{patternText || "还没有格式"}</div>
-              </div>
-            </section>
-          </div>
+
+              <div className="code-box">{patternText || "还没有结构"}</div>
+            </div>
+          </section>
         ) : (
           <section className="card">
             <div className="card-header row-between">
@@ -580,11 +713,11 @@ export default function App() {
               <div className="soft-box">
                 <p>每个白框代表一个字，或一个英文单词。</p>
                 <p>右上角的 + / - 可以微调白框数量，适合处理“一音多字”或“两音一字”。</p>
-                <p>每一段还有“节拍”输入，用来描述这一段在旋律里占多少拍。整行播放时间会根据节拍自动换算。</p>
+                <p>主模式下，整行时间来自简谱时值；备用模式下，整行时间来自你手动搭出的结构。</p>
               </div>
 
               {draftLines.length === 0 ? (
-                <div className="empty-state">先在“建立格式”里输入格式，或粘贴现成歌词识别格式。</div>
+                <div className="empty-state">先输入简谱，或者在备用模式里建立结构。</div>
               ) : (
                 draftLines.map((line, lineIdx) => (
                   <div key={lineIdx} className="line-card">
@@ -594,11 +727,15 @@ export default function App() {
                         <span className={`pill ${lineCellsFilled(line) ? "pill-success" : ""}`}>
                           {lineCellsFilled(line) ? "已填完" : "填写中"}
                         </span>
-                        <span className="pill">总拍数 {line.totalBeats || sumLineBeats(line)}</span>
+                        <span className="pill">总拍数 {line.totalBeats}</span>
                       </div>
                       <div className="line-actions">
                         <button className="btn btn-outline" onClick={() => addSegment(lineIdx)}>加一段</button>
-                        <button className="btn btn-outline" onClick={() => playRange(line.startTime, line.endTime, `播放第 ${lineIdx + 1} 行`)} disabled={!audioUrl}>
+                        <button
+                          className="btn btn-outline"
+                          onClick={() => playLineMelody(line, lineIdx)}
+                          disabled={!lineHasNotes(line)}
+                        >
                           播放本行
                         </button>
                         <button className="btn btn-ghost" onClick={() => removeLine(lineIdx)}>删除本行</button>
@@ -615,7 +752,9 @@ export default function App() {
                         <input className="input" value={line.endTime || ""} readOnly placeholder="自动生成" />
                       </div>
                       <div className="line-time-note">
-                        {line.startTime || line.endTime ? `区间：${line.startTime || "?"} - ${line.endTime || "?"}` : "等待自动生成整行时间"}
+                        {line.startTime || line.endTime
+                          ? `区间：${line.startTime || "?"} - ${line.endTime || "?"}`
+                          : "等待生成整行时间"}
                       </div>
                     </div>
 
@@ -623,7 +762,9 @@ export default function App() {
                       {line.segments.map((seg, segIdx) => (
                         <div key={segIdx} className="segment-card">
                           <div className="row-between segment-head">
-                            <div className="segment-title">第 {segIdx + 1} 段 · {seg.size} 格</div>
+                            <div className="segment-title">
+                              第 {segIdx + 1} 段 · {seg.size} 格 · {seg.beats} 拍
+                            </div>
                             <div className="segment-actions">
                               <button className="mini-btn" onClick={() => adjustSegmentSize(lineIdx, segIdx, -1)}>-</button>
                               <button className="mini-btn" onClick={() => adjustSegmentSize(lineIdx, segIdx, 1)}>+</button>
@@ -631,18 +772,11 @@ export default function App() {
                             </div>
                           </div>
 
-                          <div className="segment-beat-row">
-                            <div>
-                              <div className="field-label">本段节拍</div>
-                              <input
-                                className="input"
-                                value={String(seg.beats || seg.size)}
-                                onChange={(e) => updateSegmentBeats(lineIdx, segIdx, e.target.value)}
-                                placeholder="如 4"
-                              />
+                          {seg.notes.length > 0 ? (
+                            <div className="note-box">
+                              简谱：{seg.notes.map((note) => note.raw).join(" ")}
                             </div>
-                            <div className="muted-text align-bottom">这一段占多少拍，由它决定整行时间长度。</div>
-                          </div>
+                          ) : null}
 
                           <div className="cells-wrap">
                             {seg.cells.map((cell, cellIdx) => (
@@ -667,7 +801,7 @@ export default function App() {
 
               <div className="line-actions">
                 <button className="btn btn-outline" onClick={addLine}>新增一行</button>
-                <button className="btn btn-ghost" onClick={stopAudio}>停止播放</button>
+                <button className="btn btn-ghost" onClick={stopPlayback}>停止播放</button>
               </div>
             </div>
           </section>
